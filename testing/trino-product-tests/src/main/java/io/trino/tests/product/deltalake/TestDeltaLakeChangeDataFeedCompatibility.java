@@ -457,6 +457,59 @@ public class TestDeltaLakeChangeDataFeedCompatibility
     }
 
     @Test(groups = {DELTA_LAKE_OSS, PROFILE_SPECIFIC_TESTS}, dataProvider = "columnMappingModeDataProvider")
+    public void testMergeInsertIntoTableWithCdfEnabled(String columnMappingMode)
+    {
+        String tableName1 = "test_merge_insert_into_table_with_cdf_" + randomNameSuffix();
+        String tableName2 = "test_merge_insert_into_table_with_cdf_data_table_" + randomNameSuffix();
+        try {
+            onDelta().executeQuery("CREATE TABLE default." + tableName1 + " (nationkey INT, name STRING, regionkey INT) " +
+                    "USING DELTA " +
+                    "LOCATION 's3://" + bucketName + "/databricks-compatibility-test-" + tableName1 + "'" +
+                    "TBLPROPERTIES (delta.enableChangeDataFeed = true, 'delta.columnMapping.mode' = '" + columnMappingMode + "')");
+            onDelta().executeQuery("CREATE TABLE default." + tableName2 + " (nationkey INT, name STRING, regionkey INT) " +
+                    "USING DELTA " +
+                    "LOCATION 's3://" + bucketName + "/databricks-compatibility-test-" + tableName2 + "'" +
+                    "TBLPROPERTIES (delta.enableChangeDataFeed = true)");
+
+            onDelta().executeQuery("INSERT INTO default." + tableName1 + " VALUES (1, 'nation1', 100)");
+            onDelta().executeQuery("INSERT INTO default." + tableName1 + " VALUES (2, 'nation2', 200)");
+            onDelta().executeQuery("INSERT INTO default." + tableName1 + " VALUES (3, 'nation3', 300)");
+
+            onDelta().executeQuery("INSERT INTO default." + tableName2 + " VALUES (1000, 'nation1000', 1000)");
+            onDelta().executeQuery("INSERT INTO default." + tableName2 + " VALUES (3000, 'nation3000', 3000)");
+
+            onTrino().executeQuery("MERGE INTO delta.default." + tableName1 + " cdf USING delta.default." + tableName2 + " n " +
+                    "ON (cdf.nationkey = n.nationkey) " +
+                    "WHEN MATCHED " +
+                    "THEN UPDATE SET nationkey = (cdf.nationkey + n.nationkey + n.regionkey) " +
+                    "WHEN NOT MATCHED " +
+                    "THEN INSERT (nationkey, name, regionkey) VALUES (n.nationkey, n.name, n.regionkey)");
+
+            assertThat(onDelta().executeQuery("SELECT * FROM " + tableName1))
+                    .containsOnly(
+                            row(1000, "nation1000", 1000),
+                            row(3000, "nation3000", 3000),
+                            row(1, "nation1", 100),
+                            row(3, "nation3", 300));
+
+            assertThat(onDelta().executeQuery(
+                    "SELECT nationkey, name, regionkey, _change_type, _commit_version " +
+                            "FROM table_changes('default." + tableName1 + "', 0)"))
+                    .containsOnly(
+                            row(1, "nation1", 100, "insert", 1),
+                            row(2, "nation2", 200, "insert", 2),
+                            row(3, "nation3", 300, "insert", 3),
+                            row(1000, "nation1000", 1000, "insert", 4),
+                            row(3000, "nation3000", 3000, "insert", 4),
+        }
+        finally {
+            dropDeltaTableWithRetry("default." + tableName1);
+            dropDeltaTableWithRetry("default." + tableName2);
+        }
+    }
+
+
+    @Test(groups = {DELTA_LAKE_OSS, PROFILE_SPECIFIC_TESTS}, dataProvider = "columnMappingModeDataProvider")
     public void testMergeDeleteIntoTableWithCdfEnabled(String columnMappingMode)
     {
         String tableName1 = "test_merge_delete_into_table_with_cdf_" + randomNameSuffix();
